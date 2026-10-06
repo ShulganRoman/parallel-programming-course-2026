@@ -6,6 +6,7 @@ void main() throws InterruptedException {
     List<Integer> list = List.of(1, 2, 4, 8, 16);
     for (var threads : list)
         System.out.println("median in " + threads + " = " + measurePoint(new SnapshotMetricsCollector(), latencies, threads));
+
 }
 
 private static int[] generateLatencies() {
@@ -46,7 +47,7 @@ private static int[] generateLatencies() {
     return latencies;
 }
 
-public static int run(MetricsCollector collector, int[] values, int T, long millis) throws InterruptedException {
+public static long run(MetricsCollector collector, int[] values, int T, long millis) throws InterruptedException {
     AtomicBoolean stop = new AtomicBoolean(false);
     CountDownLatch start = new CountDownLatch(T + 1);
     long[] ops = new long[T];
@@ -94,9 +95,7 @@ public static int run(MetricsCollector collector, int[] values, int T, long mill
 
         System.out.println("list = " + Arrays.stream(ops).boxed().toList());
 
-        int sum = (int) Arrays.stream(ops).sum();
-        System.out.println("ops / sec = " + sum / (int) ((t1 - t0) / 1e9));
-        return sum;
+        return (long) (Arrays.stream(ops).sum() / ((t1 - t0) / 1e9));
 
 
     } finally {
