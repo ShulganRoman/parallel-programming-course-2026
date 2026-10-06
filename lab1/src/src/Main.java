@@ -1,7 +1,11 @@
 void main() throws InterruptedException {
+    var latencies = generateLatencies();
+
+    InconsistencyTest.run(new SnapshotMetricsCollector(), latencies);
+
     List<Integer> list = List.of(1, 2, 4, 8, 16);
     for (var threads : list)
-        System.out.println("median in " + threads + " = " + measurePoint(new SnapshotMetricsCollector(), generateLatencies(), threads));
+        System.out.println("median in " + threads + " = " + measurePoint(new SnapshotMetricsCollector(), latencies, threads));
 }
 
 private static int[] generateLatencies() {
@@ -88,17 +92,17 @@ public static int run(MetricsCollector collector, int[] values, int T, long mill
         if(!executor.awaitTermination(1, TimeUnit.MINUTES))
             System.out.println("executor did not terminate");
 
-//        System.out.println("list = " + Arrays.stream(ops).boxed().toList());
+        System.out.println("list = " + Arrays.stream(ops).boxed().toList());
 
-        int result = (int) (Arrays.stream(ops).sum() / ((t1 - t0) / 1e9));
-//        System.out.println(result);
-        return result;
+        int sum = (int) Arrays.stream(ops).sum();
+        System.out.println("ops / sec = " + sum / (int) ((t1 - t0) / 1e9));
+        return sum;
+
 
     } finally {
         executor.shutdownNow();
     }
 }
-
 
 public static long now() {
     return System.nanoTime();
@@ -110,13 +114,14 @@ public static long median(long[] values) {
 
 public static long measurePoint(MetricsCollector collector, int[] values, int T) throws InterruptedException {
     int loops = 5;
-    run(collector, values, T, 5000);
+    run(new SnapshotMetricsCollector(), values, T, 5000);
     long[] result = new long[loops];
 
     for (int i = 0; i < loops; i++)
         result[i] = run(collector, values, T, 5000);
 
-//    System.out.println("count = " + collector.snapshot().count());
+    System.out.println("Expected count = " + collector.snapshot().count());
+    System.out.println("Actually count = " + Arrays.stream(result).sum());
 
     return median(result);
 }

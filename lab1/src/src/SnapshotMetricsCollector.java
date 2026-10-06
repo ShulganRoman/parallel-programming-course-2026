@@ -1,28 +1,53 @@
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
+
 import static java.lang.Math.min;
 
 public class SnapshotMetricsCollector implements MetricsCollector {
     long[] buckets = new long[256];
-    long count = 0;
-    long sum = 0;
-    long min = Long.MAX_VALUE;
-    long max = 0;
+    Object[] locks = Stream.generate(Object::new)
+            .limit(16)
+            .toArray();
+
+    AtomicLong count = new AtomicLong(0);
+    AtomicLong sum = new AtomicLong(0);
+    AtomicLong min = new AtomicLong(Long.MAX_VALUE);
+    AtomicLong max = new AtomicLong(0);
 
     @Override
-    public synchronized void record(long value) {
-        buckets[(int) min(value / 4, 255)]++;
-        count++;
-        sum += value;
-        if (value < min) min = value;
-        if (value > max) max = value;
+    public void record(long value) {
+        int b = Math.toIntExact(min(value / 4, 255));
+
+        synchronized (locks[b % 16]) {
+            buckets[b]++;
+        }
+
+        count.incrementAndGet();
+        sum.getAndAdd(value);
+
+        long minimum = min.get();
+        while (value < minimum) {
+            if (min.compareAndSet(minimum, value)) break;
+            minimum = min.get();
+        }
+
+        long maximum = max.get();
+        while (value > maximum) {
+            if (max.compareAndSet(maximum, value)) break;
+            maximum = max.get();
+        }
     }
 
     @Override
     public synchronized Snapshot snapshot() {
         long[] copy = buckets.clone();
 
-        return new Snapshot(copy, count, sum, min, max,
-                percentile(copy, count, .5),
-                percentile(copy, count, .99));
+        long total = Arrays.stream(copy).sum();
+
+        return new Snapshot(copy, count.get(), sum.get(), min.get(), max.get(),
+                percentile(copy, total, .5),
+                percentile(copy, total, .99));
     }
 
     private static long percentile(long[] buckets, long count, double q) {
