@@ -8,7 +8,7 @@ public class SnapshotMetricsCollector implements MetricsCollector {
     long max = 0;
 
     @Override
-    public void record(long value) {
+    public synchronized void record(long value) {
         buckets[(int) min(value / 4, 255)]++;
         count++;
         sum += value;
@@ -17,7 +17,7 @@ public class SnapshotMetricsCollector implements MetricsCollector {
     }
 
     @Override
-    public Snapshot snapshot() {
+    public synchronized Snapshot snapshot() {
         long[] copy = buckets.clone();
 
         return new Snapshot(copy, count, sum, min, max,
