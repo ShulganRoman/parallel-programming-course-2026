@@ -1,17 +1,37 @@
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class SnapshotMetricsCollector implements MetricsCollector {
-    private final List<ThreadState> allStates = new ArrayList<>();
-    private final Object listLock = new Object();
+    private volatile int active = 0;
 
-    private final ThreadLocal<ThreadState> myState = ThreadLocal.withInitial(() -> {
-        ThreadState s = new ThreadState();
-        synchronized (listLock) {
-            allStates.add(s);
+    private final Object snapLock = new Object();
+    private final List<ThreadBuffers> allBuffers = new ArrayList<>();
+
+    private final long[] globalBuckets = new long[256];
+    private long globalCount = 0;
+    private long globalSum = 0;
+    private long globalMin = Long.MAX_VALUE;
+    private long globalMax = 0;
+
+    private final ThreadLocal<ThreadBuffers> myBuffers = ThreadLocal.withInitial(() -> {
+        ThreadBuffers buffers = new ThreadBuffers();
+        synchronized (snapLock) {
+            allBuffers.add(buffers);
         }
-        return s;
+        return buffers;
     });
+
+//    private final List<ThreadState> allStates = new ArrayList<>();
+//    private final Object listLock = new Object();
+//
+//    private final ThreadLocal<ThreadState> myState = ThreadLocal.withInitial(() -> {
+//        ThreadState s = new ThreadState();
+//        synchronized (listLock) {
+//            allStates.add(s);
+//        }
+//        return s;
+//    });
 
 //    long[] buckets = new long[256];
 //    Object[] locks = Stream.generate(Object::new)
@@ -25,37 +45,54 @@ public class SnapshotMetricsCollector implements MetricsCollector {
 
     @Override
     public void record(long value) {
-        ThreadState s = myState.get();
-        int b = (int) Math.min(value / 4, 255);
+        ThreadBuffers my = myBuffers.get();
+        int b;
 
-        s.buckets.setRelease(b, s.buckets.getPlain(b) + 1);
-        s.count.setRelease(s.count.getPlain() + 1);
-        s.sum.setRelease(s.sum.getPlain() + value);
+        while (true) {
+            b = active;
+            my.inside.set(b);
+            if (active == b) break;
+            my.inside.setRelease(-1);
+        }
 
-        // min и max обновляются обычным сравнением без CAS:
-        if (value < s.min.getPlain()) s.min.setRelease(value);
-        if (value > s.max.getPlain()) s.max.setRelease(value);
+        int bucket = (int) Math.min(value / 4, 255);
+        my.buckets[b][bucket]++;
+        my.count[b]++;
+        my.sum[b] += value;
+        if (value < my.min[b]) my.min[b] = value;
+        if (value > my.max[b]) my.max[b] = value;
+
+        my.inside.setRelease(-1);
     }
 
     @Override
-    public synchronized Snapshot snapshot() {
-        List<ThreadState> copyOfStates = List.copyOf(allStates);
+    public Snapshot snapshot() {
+        synchronized (snapLock) {
+            int old = active;
+            active = 1 - old;
 
-        long[] out = new long[256];
-        long count = 0, sum = 0, min = Long.MAX_VALUE, max = 0;
+            for (ThreadBuffers s : allBuffers) {
+                while (s.inside.get() == old)
+                    Thread.onSpinWait();
 
-        for (ThreadState s : copyOfStates) {
-            for (int i = 0; i < 256; i++) out[i] += s.buckets.get(i); // C++: .load(relaxed)
-            count += s.count.get();
+                for (int i = 0; i < 256; i++) globalBuckets[i] += s.buckets[old][i];
+                globalCount += s.count[old];
+                globalSum += s.sum[old];
+                globalMin = Math.min(globalMin, s.min[old]);
+                globalMax = Math.max(globalMax, s.max[old]);
 
-            sum += s.sum.get();
-            min = Math.min(min, s.min.get());
-            max = Math.max(max, s.max.get());
+                Arrays.fill(s.buckets[old], 0);
+                s.count[old] = 0;
+                s.sum[old] = 0;
+                s.min[old] = Long.MAX_VALUE;
+                s.max[old] = 0;
+            }
+
+            long[] out = globalBuckets.clone();
+            return new Snapshot(out, globalCount, globalSum, globalMin, globalMax,
+                    computePercentile(out, globalCount, 0.50),
+                    computePercentile(out, globalCount, 0.99));
         }
-// считаем p50 и p99 кумулятивно по массиву out (см. Этап 0)
-        long p50 = computePercentile(out, count, 0.50);
-        long p99 = computePercentile(out, count, 0.99);
-        return new Snapshot(out, count, sum, min, max, p50, p99);
     }
 
     private static long computePercentile(long[] buckets, long count, double q) {
